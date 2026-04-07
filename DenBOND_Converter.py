@@ -10,12 +10,11 @@ import io
 # --- ИМПОРТЫ ---
 try:
     from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
-except:
+except ImportError:
     try:
         from moviepy import VideoFileClip, ImageClip, CompositeVideoClip
-    except:
-        pass
-
+    except ImportError as e:
+        print(f"❌ Ошибка импорта MoviePy: {e}")
 if hasattr(Image, 'Resampling'):
     RS_METHOD = Image.Resampling.LANCZOS
 else:
