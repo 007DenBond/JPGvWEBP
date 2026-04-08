@@ -8,22 +8,60 @@ import sys
 import os
 import tempfile
 import threading
+import traceback
+import importlib.metadata as importlib_metadata
+
+# В onefile-сборках PyInstaller иногда отсутствует metadata пакетов imageio.
+# Это не критично для работы движка, поэтому подставляем безопасную версию.
+if getattr(sys, "frozen", False):
+    _orig_metadata_version = importlib_metadata.version
+
+    def _safe_metadata_version(name):
+        try:
+            return _orig_metadata_version(name)
+        except importlib_metadata.PackageNotFoundError:
+            if name in ("imageio", "imageio-ffmpeg", "imageio_ffmpeg"):
+                return "0"
+            raise
+
+    importlib_metadata.version = _safe_metadata_version
 
 # --- Видео: пути в скомпилированном приложении (ffmpeg + moviepy) ---
 if getattr(sys, "frozen", False):
-    os.environ["IMAGEIO_FFMPEG_EXE"] = os.path.join(
-        sys._MEIPASS, "moviepy", "ffmpeg_bin", "ffmpeg"
-    )
+    # Не фиксируем путь жестко: в PyInstaller ffmpeg может лежать в разных местах.
+    # Ставим IMAGEIO_FFMPEG_EXE только если реально нашли исполняемый файл.
+    _ffmpeg_candidates = [
+        os.path.join(sys._MEIPASS, "moviepy", "ffmpeg_bin", "ffmpeg"),
+        os.path.join(sys._MEIPASS, "imageio_ffmpeg", "binaries", "ffmpeg"),
+    ]
+    _ffmpeg_exe = None
+    for _cand in _ffmpeg_candidates:
+        if os.path.isfile(_cand):
+            _ffmpeg_exe = _cand
+            break
+    if _ffmpeg_exe is None:
+        _bins_dir = os.path.join(sys._MEIPASS, "imageio_ffmpeg", "binaries")
+        if os.path.isdir(_bins_dir):
+            for _name in os.listdir(_bins_dir):
+                _cand = os.path.join(_bins_dir, _name)
+                if os.path.isfile(_cand):
+                    _ffmpeg_exe = _cand
+                    break
+    if _ffmpeg_exe:
+        os.environ["IMAGEIO_FFMPEG_EXE"] = _ffmpeg_exe
     sys.path.append(os.path.join(sys._MEIPASS, "moviepy"))
 
 try:
     from moviepy.editor import VideoFileClip, ImageClip, CompositeVideoClip
+    VIDEO_ENGINE_IMPORT_ERROR = None
 except Exception:
     try:
         from moviepy.video.io.VideoFileClip import VideoFileClip
-        from moviepy.video.VideoClip import ColorClip as ImageClip
+        from moviepy.video.VideoClip import ImageClip
         from moviepy.video.compositing.CompositeVideoClip import CompositeVideoClip
+        VIDEO_ENGINE_IMPORT_ERROR = None
     except Exception:
+        VIDEO_ENGINE_IMPORT_ERROR = traceback.format_exc()
         VideoFileClip = None
         ImageClip = None
         CompositeVideoClip = None
@@ -158,7 +196,7 @@ class DenBONDApp(ctk.CTk):
         ctk.CTkLabel(parent, text="🛡 Логотип и водяной знак", font=("Arial", 13, "bold")).pack(anchor="w", pady=(0, 2))
         ctk.CTkButton(parent, text="📩 СВОЙ ЛОГОТИП", height=28, command=self.load_logo).pack(anchor="w", pady=(0, 2))
 
-        ctk.CTkLabel(parent, text="Прозрачность", font=("Arial", 12)).pack(anchor="w")
+        ctk.CTkLabel(parent, text="Плотность вотермарки", font=("Arial", 12)).pack(anchor="w")
         row_o = ctk.CTkFrame(parent, fg_color="transparent")
         row_o.pack(fill="x", pady=(0, 2))
         self.slider_opacity = ctk.CTkSlider(row_o, from_=10, to=100, command=self._on_opacity_slider, height=16)
@@ -242,7 +280,8 @@ class DenBONDApp(ctk.CTk):
             self.lbl_count = ctk.CTkLabel(inner, text=f"ВЫБРАНО ФАЙЛОВ: {len(self.input_files)}", font=("Arial", 12))
             self.lbl_count.pack(anchor="w", pady=2)
 
-            self._build_save_format_row(inner)
+            if tab == "photo":
+                self._build_save_format_row(inner)
             self._build_watermark_section(inner)
 
     def log(self, msg):
@@ -321,9 +360,9 @@ class DenBONDApp(ctk.CTk):
         out.paste(l_copy, pos, l_copy)
         return out
 
-    def _watermark_diagonal(self, base, logo):
+    def _watermark_diagonal(self, base, logo, density):
         w, h = base.size
-        l_copy = self._apply_logo_alpha(logo.copy(), 0.3)
+        l_copy = self._apply_logo_alpha(logo.copy(), density)
         frac = self.get_logo_width_fraction()
         l_w = max(1, int(w * frac))
         l_h = max(1, int(l_w * (l_copy.height / l_copy.width)))
@@ -401,13 +440,21 @@ class DenBONDApp(ctk.CTk):
             density = self.get_opacity_ratio()
             logo = self.get_logo_image()
             files = list(self.input_files)
+            ok_count = 0
+            fail_count = 0
 
             for f in files:
                 ext = f.lower().rsplit(".", 1)[-1] if "." in f else ""
                 if ext in ("mp4", "mov", "avi"):
-                    self.process_video(f, out_dir, logo, density)
+                    if self.process_video(f, out_dir, logo, density):
+                        ok_count += 1
+                    else:
+                        fail_count += 1
                 else:
-                    self.process_photo(f, out_dir, logo, density)
+                    if self.process_photo(f, out_dir, logo, density):
+                        ok_count += 1
+                    else:
+                        fail_count += 1
 
             self.input_files = []
 
@@ -415,6 +462,7 @@ class DenBONDApp(ctk.CTk):
                 self.update_count_label()
                 self.btn_run.configure(state="normal", text="DenBOND, КОЛДУЙ!")
                 self._processing = False
+                self.log(f"Итог: успешно {ok_count}, с ошибкой {fail_count}.")
                 try:
                     subprocess.run(["open", out_dir], check=False)
                 except Exception:
@@ -442,7 +490,7 @@ class DenBONDApp(ctk.CTk):
             elif mode == "right_bottom":
                 result = self._watermark_corner(base, logo, density, "right_bottom")
             elif mode == "diagonal":
-                result = self._watermark_diagonal(base, logo)
+                result = self._watermark_diagonal(base, logo, density)
             elif mode == "grid":
                 result = self._watermark_grid(base, logo, density)
             else:
@@ -450,32 +498,54 @@ class DenBONDApp(ctk.CTk):
 
             self._save_photo_result(result, out_path)
             self.log(f"✅ Фото готово!")
+            return True
         except Exception as e:
             self.log(f"❌ Ошибка фото: {e}")
+            return False
 
     _VIDEO_WRITE_KW = {
         "codec": "libx264",
-        "audio_codec": "aac",
-        "bitrate": "5000k",
         "preset": "medium",
+        "ffmpeg_params": ["-pix_fmt", "yuv420p", "-movflags", "+faststart"],
     }
 
     def process_video(self, path, folder, logo, density):
         if VideoFileClip is None or ImageClip is None or CompositeVideoClip is None:
             self.log("❌ Видео-движок не найден в сборке!")
-            return
+            if VIDEO_ENGINE_IMPORT_ERROR:
+                self.log("ℹ Диагностика импорта video-движка:")
+                for line in VIDEO_ENGINE_IMPORT_ERROR.strip().splitlines()[-8:]:
+                    self.log(line)
+            self.log(f"ℹ frozen={getattr(sys, 'frozen', False)}")
+            self.log(f"ℹ IMAGEIO_FFMPEG_EXE={os.environ.get('IMAGEIO_FFMPEG_EXE', 'not set')}")
+            return False
         try:
             self.log(f"🎬 Рендер видео: {os.path.basename(path)}")
             clip = VideoFileClip(path)
             W, H = clip.size
+            if W % 2 != 0 or H % 2 != 0:
+                # libx264 часто падает на нечетных размерах кадра.
+                new_w = W - (W % 2)
+                new_h = H - (H % 2)
+                clip = clip.resize(newsize=(new_w, new_h))
+                W, H = new_w, new_h
             out = os.path.join(folder, f"DenBOND_{os.path.basename(path)}")
             mode = self._position_key
+            write_kw = dict(self._VIDEO_WRITE_KW)
+            if clip.audio is not None:
+                write_kw["audio_codec"] = "aac"
+                write_kw["temp_audiofile"] = os.path.join(
+                    tempfile.gettempdir(), f"denbond_{os.getpid()}_audio.m4a"
+                )
+                write_kw["remove_temp"] = True
+            else:
+                write_kw["audio"] = False
 
             if mode == "none":
-                clip.write_videofile(out, **self._VIDEO_WRITE_KW)
+                clip.write_videofile(out, **write_kw)
                 clip.close()
                 self.log(f"✅ Видео готово!")
-                return
+                return True
 
             fd, tmp_path = tempfile.mkstemp(suffix=".png")
             os.close(fd)
@@ -493,7 +563,7 @@ class DenBONDApp(ctk.CTk):
                     wm = wm.set_position(pos)
                 elif mode == "diagonal":
                     blank = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-                    overlay = self._watermark_diagonal(blank, logo)
+                    overlay = self._watermark_diagonal(blank, logo, density)
                     overlay.save(tmp_path)
                     wm = ImageClip(tmp_path).set_duration(clip.duration).set_position((0, 0))
                 elif mode == "grid":
@@ -511,8 +581,8 @@ class DenBONDApp(ctk.CTk):
                     wm = ImageClip(tmp_path).set_duration(clip.duration)
                     wm = wm.set_position(pos)
 
-                final = CompositeVideoClip([clip, wm])
-                final.write_videofile(out, **self._VIDEO_WRITE_KW)
+                final = CompositeVideoClip([clip, wm]).set_duration(clip.duration)
+                final.write_videofile(out, **write_kw)
             finally:
                 try:
                     if final is not None:
@@ -533,8 +603,10 @@ class DenBONDApp(ctk.CTk):
                 except Exception:
                     pass
             self.log(f"✅ Видео готово!")
+            return True
         except Exception as e:
             self.log(f"⚠️ Ошибка видео: {e}")
+            return False
 
 if __name__ == "__main__":
     app = DenBONDApp()

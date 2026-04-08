@@ -1,7 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import copy_metadata
 
+datas = [('/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/moviepy', 'moviepy')]
 hiddenimports = ['moviepy.editor']
+datas += copy_metadata('imageio')
+datas += copy_metadata('imageio-ffmpeg')
 hiddenimports += collect_submodules('moviepy')
 
 
@@ -9,7 +13,7 @@ a = Analysis(
     ['DenBOND_Converter.py'],
     pathex=[],
     binaries=[],
-    datas=[('/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/site-packages/moviepy', 'moviepy')],
+    datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
