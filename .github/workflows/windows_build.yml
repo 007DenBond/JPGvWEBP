@@ -1,0 +1,36 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]  # Сработает сразу, как сделаешь push в main
+
+jobs:
+  build:
+    runs-on: windows-latest  # Запускаем на сервере с Windows
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install customtkinter pillow moviepy imageio-ffmpeg pyinstaller
+
+    - name: Build with PyInstaller
+      run: |
+        # Здесь мы используем твой золотой рецепт сборки
+        pyinstaller -y --clean --noconsole --onefile `
+        --add-data "logo_code.txt;." `
+        --hidden-import moviepy.editor `
+        DenBOND_Converter.py
+
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: DenBOND-Windows-Tool
+        path: dist/DenBOND_Converter.exe
